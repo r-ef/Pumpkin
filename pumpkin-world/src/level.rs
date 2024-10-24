@@ -7,7 +7,6 @@ use crate::{
     world_gen::{get_world_gen, Seed, WorldGenerator},
 };
 use pumpkin_core::math::vector2::Vector2;
-use tokio::sync::mpsc;
 use tokio::sync::{Mutex, RwLock};
 
 type RAMChunkStorage = Arc<RwLock<HashMap<Vector2<i32>, Arc<RwLock<ChunkData>>>>>;
@@ -141,7 +140,7 @@ impl Level {
     pub fn fetch_chunks(
         &self,
         chunks: &[Vector2<i32>],
-        channel: mpsc::Sender<Arc<RwLock<ChunkData>>>,
+        channel: flume::Sender<Arc<RwLock<ChunkData>>>,
     ) {
         for chunk in chunks {
             {
@@ -158,7 +157,7 @@ impl Level {
                     match possibly_loaded_chunk {
                         Some(chunk) => {
                             let chunk = chunk.clone();
-                            channel.send(chunk).await.unwrap();
+                            channel.send_async(chunk).await.unwrap();
                         }
                         None => {
                             let chunk_data = match save_file {
@@ -195,7 +194,7 @@ impl Level {
                                 }
                             };
                             match chunk_data {
-                                Ok(data) => channel.send(data).await.unwrap(),
+                                Ok(data) => channel.send_async(data).await.unwrap(),
                                 Err(err) => {
                                     log::warn!(
                                         "Failed to read chunk {:?}: {:?}",

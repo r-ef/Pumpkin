@@ -24,8 +24,9 @@ use pumpkin_world::chunk::ChunkData;
 use pumpkin_world::coordinates::ChunkRelativeBlockCoordinates;
 use pumpkin_world::level::Level;
 use scoreboard::Scoreboard;
+use std::sync::atomic::Ordering;
 use tokio::sync::Mutex;
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::RwLock;
 
 pub mod scoreboard;
 
@@ -286,44 +287,86 @@ impl World {
         level.mark_chunk_as_newly_watched(chunks).await;
     }
 
-    async fn spawn_world_chunks(&self, client: Arc<Client>, chunks: Vec<Vector2<i32>>) {
-        if client.closed.load(std::sync::atomic::Ordering::Relaxed) {
+    pub async fn spawn_world_chunks(&self, client: Arc<Client>, chunks: Vec<Vector2<i32>>) {
+        const BATCH_SIZE: usize = 16;
+        const CHANNEL_BUFFER_SIZE: usize = 32;
+
+        if client.closed.load(Ordering::Acquire) {
             log::info!(
-                "The connection with {} has closed before world chunks were spawned",
+                "Connection {} closed before chunk spawning began",
                 client.id
             );
             return;
         }
-        let inst = std::time::Instant::now();
-        let chunks = self.get_chunks(chunks).await;
 
-        tokio::spawn(async move {
-            for chunk_data in chunks {
-                let chunk_data = chunk_data.read().await;
-                let packet = CChunkData(&chunk_data);
-                #[cfg(debug_assertions)]
-                if chunk_data.position == (0, 0).into() {
-                    use pumpkin_protocol::bytebuf::ByteBuffer;
-                    let mut test = ByteBuffer::empty();
-                    packet.write(&mut test);
-                    let len = test.buf().len();
-                    log::debug!(
-                        "Chunk packet size: {}B {}KB {}MB",
-                        len,
-                        len / 1024,
-                        len / (1024 * 1024)
-                    );
+        let start = std::time::Instant::now();
+        let chunk_count = chunks.len();
+        let (tx, rx) = flume::bounded(CHANNEL_BUFFER_SIZE);
+
+        let fetch_handle = {
+            let chunks = chunks.clone();
+            let level = self.level.clone();
+            tokio::spawn(async move {
+                let mut level = level.lock().await;
+                for chunk_batch in chunks.chunks(BATCH_SIZE) {
+                    let batch_chunks = level.fetch_chunks_batch(chunk_batch.to_vec()).await;
+                    for chunk in batch_chunks {
+                        if tx.send_async(chunk).await.is_err() {
+                            log::warn!("Chunk processing cancelled - receiver dropped");
+                            return;
+                        }
+                    }
                 }
+            })
+        };
 
-                // TODO: Queue player packs in a queue so we don't need to check if its closed before
-                // sending
-                if !client.closed.load(std::sync::atomic::Ordering::Relaxed) {
-                    client.send_packet(&packet).await;
+        let send_handle = tokio::spawn(async move {
+            let mut processed_chunks = 0;
+            let mut chunk_data_holders = Vec::with_capacity(BATCH_SIZE);
+            while let Some(chunk_data) = rx.recv_async().await.ok() {
+                if client.closed.load(Ordering::Acquire) {
+                    log::info!("Client {} disconnected during chunk processing", client.id);
+                    break;
+                }
+                chunk_data_holders.push(chunk_data);
+                processed_chunks += 1;
+                if chunk_data_holders.len() == BATCH_SIZE || processed_chunks == chunk_count {
+                    let mut guards = Vec::with_capacity(chunk_data_holders.len());
+                    let mut packets = Vec::with_capacity(chunk_data_holders.len());
+
+                    for chunk in &chunk_data_holders {
+                        guards.push(chunk.read().await);
+                    }
+
+                    for guard in &guards {
+                        packets.push(CChunkData(&**guard));
+                    }
+
+                    for packet in &packets {
+                        client.send_packet(packet).await;
+                    }
+
+                    drop(guards);
+                    chunk_data_holders.clear();
                 }
             }
-
-            log::debug!("chunks sent after {}ms", inst.elapsed().as_millis());
+            processed_chunks
         });
+
+        let (fetch_result, send_result) = tokio::join!(fetch_handle, send_handle);
+        match (fetch_result, send_result) {
+            (Ok(_), Ok(processed_chunks)) => {
+                let elapsed = start.elapsed();
+                log::debug!(
+                    "Processed {} chunks in {}ms ({}ms per chunk)",
+                    processed_chunks,
+                    elapsed.as_millis(),
+                    elapsed.as_millis() as f64 / processed_chunks as f64
+                );
+            }
+            (Err(e), _) => log::error!("Chunk fetching failed: {}", e),
+            (_, Err(e)) => log::error!("Chunk sending failed: {}", e),
+        }
     }
 
     /// Gets a Player by entity id
@@ -387,7 +430,7 @@ impl World {
     }
 
     pub async fn get_chunks(&self, chunks: Vec<Vector2<i32>>) -> Vec<Arc<RwLock<ChunkData>>> {
-        let (sender, mut receive) = mpsc::channel(chunks.len());
+        let (sender, receive) = flume::bounded(chunks.len());
         {
             let level = self.level.clone();
             tokio::spawn(async move { level.lock().await.fetch_chunks(&chunks, sender) });
@@ -395,7 +438,7 @@ impl World {
         tokio::spawn(async move {
             let mut received = vec![];
 
-            while let Some(chunk) = receive.recv().await {
+            while let Some(chunk) = receive.recv_async().await.ok() {
                 received.push(chunk);
             }
             received
@@ -420,5 +463,32 @@ impl World {
             .await
             .blocks
             .get_block(relative)
+    }
+}
+
+// Batch processing
+#[async_trait::async_trait]
+trait ChunkFetchExt {
+    async fn fetch_chunks_batch(
+        &mut self,
+        chunks: Vec<Vector2<i32>>,
+    ) -> Vec<Arc<RwLock<ChunkData>>>;
+}
+
+#[async_trait::async_trait]
+impl ChunkFetchExt for Level {
+    async fn fetch_chunks_batch(
+        &mut self,
+
+        chunks: Vec<Vector2<i32>>,
+    ) -> Vec<Arc<RwLock<ChunkData>>> {
+        let (tx, rx) = flume::bounded(chunks.len());
+        self.fetch_chunks(&chunks, tx);
+
+        let mut batch = Vec::with_capacity(chunks.len());
+        while let Ok(chunk) = rx.recv_async().await {
+            batch.push(chunk);
+        }
+        batch
     }
 }
