@@ -15,6 +15,15 @@ pumpkin-protocol = { path = "../pumpkin-protocol" }
 pumpkin-registry = { path = "../pumpkin-registry" }
 
 itertools.workspace = true
+log.workspace = true
+crossbeam.workspace = true
+uuid.workspace = true
+tokio.workspace = true
+rayon.workspace = true
+thiserror.workspace = true
+
+num-traits.workspace = true
+num-derive.workspace = true
 
 # config
 serde.workspace = true
@@ -24,8 +33,6 @@ bytes = "1.7"
 
 rand = "0.8.5"
 
-num-traits = "0.2"
-num-derive = "0.4"
 num-bigint = "0.4"
 
 ctrlc = "3.4"
@@ -49,14 +56,13 @@ digest = "=0.11.0-pre.9"
 hmac = "0.12.1"
 sha2 = "0.10.8"
 
-thiserror = "1.0"
-
 # icon loading
 base64 = "0.22.1"
 png = "0.17.14"
 
 # logging
 simple_logger = { version = "5.0.0", features = ["threads"] }
+<<<<<<< HEAD
 log.workspace = true
 
 crossbeam.workspace = true
@@ -65,3 +71,5 @@ tokio.workspace = true
 rayon.workspace = true
 flume = "0.11.1"
 async-trait = "0.1.83"
+=======
+>>>>>>> 6fb751accf4db7bbecaa998e3e573109080a94e5

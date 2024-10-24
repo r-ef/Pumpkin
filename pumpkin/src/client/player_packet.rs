@@ -113,7 +113,7 @@ impl Player {
         // send new position to all other players
         world
             .broadcast_packet_expect(
-                &[self.client.id],
+                &[self.gameprofile.id],
                 &CUpdateEntityPos::new(
                     entity_id.into(),
                     x.mul_add(4096.0, -(last_x * 4096.0)) as i16,
@@ -186,7 +186,7 @@ impl Player {
 
         world
             .broadcast_packet_expect(
-                &[self.client.id],
+                &[self.gameprofile.id],
                 &CUpdateEntityPosRot::new(
                     entity_id.into(),
                     x.mul_add(4096.0, -(last_x * 4096.0)) as i16,
@@ -200,7 +200,7 @@ impl Player {
             .await;
         world
             .broadcast_packet_expect(
-                &[self.client.id],
+                &[self.gameprofile.id],
                 &CHeadRot::new(entity_id.into(), yaw as u8),
             )
             .await;
@@ -230,11 +230,11 @@ impl Player {
         let packet =
             CUpdateEntityRot::new(entity_id.into(), yaw as u8, pitch as u8, rotation.ground);
         world
-            .broadcast_packet_expect(&[self.client.id], &packet)
+            .broadcast_packet_expect(&[self.gameprofile.id], &packet)
             .await;
         let packet = CHeadRot::new(entity_id.into(), yaw as u8);
         world
-            .broadcast_packet_expect(&[self.client.id], &packet)
+            .broadcast_packet_expect(&[self.gameprofile.id], &packet)
             .await;
     }
 
@@ -325,7 +325,7 @@ impl Player {
                 let world = &self.living_entity.entity.world;
                 world
                     .broadcast_packet_expect(
-                        &[self.client.id],
+                        &[self.gameprofile.id],
                         &CEntityAnimation::new(id.into(), animation as u8),
                     )
                     .await;
@@ -378,7 +378,7 @@ impl Player {
         ) */
     }
 
-    pub async fn handle_client_information_play(&self, client_information: SClientInformationPlay) {
+    pub async fn handle_client_information(&self, client_information: SClientInformationPlay) {
         if let (Some(main_hand), Some(chat_mode)) = (
             Hand::from_i32(client_information.main_hand.into()),
             ChatMode::from_i32(client_information.chat_mode.into()),
@@ -646,7 +646,7 @@ impl Player {
             }
             self.open_container.store(None);
         }
-        let Some(_window_type) = WindowType::from_u8(packet.window_id) else {
+        let Some(_window_type) = WindowType::from_i32(packet.window_id.0) else {
             self.kick(TextComponent::text("Invalid window ID")).await;
             return;
         };
